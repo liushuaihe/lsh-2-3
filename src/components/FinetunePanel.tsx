@@ -254,39 +254,49 @@ export function FinetunePanel({
     return { minLoss: min - padding, maxLoss: max + padding };
   }, [allLossData]);
 
+  const maxStepValue = useMemo(() => {
+    let max = 0;
+    if (steps.length > 0) {
+      max = steps[steps.length - 1].step;
+    }
+    visibleSavedExperiments.forEach((exp) => {
+      if (exp.steps.length > 0) {
+        const lastStep = exp.steps[exp.steps.length - 1].step;
+        if (lastStep > max) max = lastStep;
+      }
+    });
+    return max;
+  }, [steps, visibleSavedExperiments]);
+
   const yAt = useCallback((loss: number) => {
     if (maxLoss === minLoss) return CHART_Y + CHART_H / 2;
     return CHART_Y + (1 - (loss - minLoss) / (maxLoss - minLoss)) * CHART_H;
   }, [minLoss, maxLoss]);
 
-  const xAtForSteps = useCallback((i: number, totalSteps: number) => {
-    if (totalSteps <= 1) return CHART_X;
-    return CHART_X + (i / (totalSteps - 1)) * CHART_W;
-  }, []);
-
-  const xAt = useCallback((i: number) => {
-    if (lossData.length <= 1) return CHART_X;
-    return CHART_X + (i / (lossData.length - 1)) * CHART_W;
-  }, [lossData.length]);
+  const xAtStep = useCallback((stepVal: number) => {
+    if (maxStepValue === 0) return CHART_X;
+    return CHART_X + (stepVal / maxStepValue) * CHART_W;
+  }, [maxStepValue]);
 
   const polylinePoints = useMemo(() => {
-    if (lossData.length <= 1) return '';
-    return lossData.map((loss, i) => `${xAt(i).toFixed(1)},${yAt(loss).toFixed(1)}`).join(' ');
-  }, [lossData, xAt, yAt]);
+    if (steps.length <= 1) return '';
+    return steps.map((s) => `${xAtStep(s.step).toFixed(1)},${yAt(s.loss).toFixed(1)}`).join(' ');
+  }, [steps, xAtStep, yAt]);
 
   const areaPathD = useMemo(() => {
-    if (lossData.length <= 1) return '';
+    if (steps.length <= 1) return '';
     const bottomY = (CHART_Y + CHART_H).toFixed(1);
-    const firstX = xAt(0).toFixed(1);
-    const lastX = xAt(lossData.length - 1).toFixed(1);
-    const line = lossData.map((loss, i) => `L${xAt(i).toFixed(1)},${yAt(loss).toFixed(1)}`).join(' ');
-    return `M${firstX},${yAt(lossData[0]).toFixed(1)} ${line} L${lastX},${bottomY} L${firstX},${bottomY} Z`;
-  }, [lossData, xAt, yAt]);
+    const firstX = xAtStep(steps[0].step).toFixed(1);
+    const lastX = xAtStep(steps[steps.length - 1].step).toFixed(1);
+    const line = steps.map((s) => `L${xAtStep(s.step).toFixed(1)},${yAt(s.loss).toFixed(1)}`).join(' ');
+    return `M${firstX},${yAt(steps[0].loss).toFixed(1)} ${line} L${lastX},${bottomY} L${firstX},${bottomY} Z`;
+  }, [steps, xAtStep, yAt]);
 
   const currentPoint = useMemo(() => {
-    if (lossData.length === 0) return { x: CHART_X, y: CHART_Y + CHART_H / 2 };
-    return { x: xAt(currentStepIndex), y: yAt(lossData[currentStepIndex]) };
-  }, [lossData, currentStepIndex, xAt, yAt]);
+    if (steps.length === 0) return { x: CHART_X, y: CHART_Y + CHART_H / 2 };
+    const step = steps[currentStepIndex];
+    return { x: xAtStep(step.step), y: yAt(step.loss) };
+  }, [steps, currentStepIndex, xAtStep, yAt]);
 
   const yTickValues = useMemo(() => {
     const arr: { value: number; yRatio: number }[] = [];
@@ -298,31 +308,15 @@ export function FinetunePanel({
   }, [minLoss, maxLoss]);
 
   const xTickValues = useMemo(() => {
-    if (stepNumbers.length === 0) return [] as { value: number; xRatio: number }[];
-    return [
-      { value: stepNumbers[0], xRatio: 0 },
-      { value: Math.round((stepNumbers[0] + stepNumbers[stepNumbers.length - 1]) / 2), xRatio: 0.5 },
-      { value: stepNumbers[stepNumbers.length - 1], xRatio: 1 },
-    ];
-  }, [stepNumbers]);
-
-  const maxStepCount = useMemo(() => {
-    let max = steps.length;
-    visibleSavedExperiments.forEach((exp) => {
-      if (exp.steps.length > max) max = exp.steps.length;
-    });
-    return max;
-  }, [steps.length, visibleSavedExperiments]);
-
-  const xTickValuesGlobal = useMemo(() => {
-    if (maxStepCount === 0) return [] as { value: number; xRatio: number }[];
-    const lastStep = maxStepCount - 1;
+    if (maxStepValue === 0) return [] as { value: number; xRatio: number }[];
     return [
       { value: 0, xRatio: 0 },
-      { value: Math.round(lastStep / 2), xRatio: 0.5 },
-      { value: lastStep, xRatio: 1 },
+      { value: Math.round(maxStepValue / 2), xRatio: 0.5 },
+      { value: maxStepValue, xRatio: 1 },
     ];
-  }, [maxStepCount]);
+  }, [maxStepValue]);
+
+  const xTickValuesGlobal = xTickValues;
 
   return (
     <div className="bg-zinc-800/30 backdrop-blur-sm rounded-2xl border border-zinc-700/50 overflow-hidden">
@@ -598,20 +592,21 @@ export function FinetunePanel({
                       ))}
 
                       {visibleSavedExperiments.map((exp) => {
-                        const expLossData = exp.steps.map((s) => s.loss);
-                        if (expLossData.length <= 1) return null;
+                        if (exp.steps.length <= 1) return null;
                         
-                        const points = expLossData
-                          .map((loss, i) => `${xAtForSteps(i, expLossData.length).toFixed(1)},${yAt(loss).toFixed(1)}`)
+                        const points = exp.steps
+                          .map((s) => `${xAtStep(s.step).toFixed(1)},${yAt(s.loss).toFixed(1)}`)
                           .join(' ');
                         
                         const bottomY = (CHART_Y + CHART_H).toFixed(1);
-                        const firstX = xAtForSteps(0, expLossData.length).toFixed(1);
-                        const lastX = xAtForSteps(expLossData.length - 1, expLossData.length).toFixed(1);
-                        const linePath = expLossData.map((loss, i) => 
-                          `L${xAtForSteps(i, expLossData.length).toFixed(1)},${yAt(loss).toFixed(1)}`
+                        const firstStep = exp.steps[0];
+                        const lastStep = exp.steps[exp.steps.length - 1];
+                        const firstX = xAtStep(firstStep.step).toFixed(1);
+                        const lastX = xAtStep(lastStep.step).toFixed(1);
+                        const linePath = exp.steps.map((s) => 
+                          `L${xAtStep(s.step).toFixed(1)},${yAt(s.loss).toFixed(1)}`
                         ).join(' ');
-                        const areaD = `M${firstX},${yAt(expLossData[0]).toFixed(1)} ${linePath} L${lastX},${bottomY} L${firstX},${bottomY} Z`;
+                        const areaD = `M${firstX},${yAt(firstStep.loss).toFixed(1)} ${linePath} L${lastX},${bottomY} L${firstX},${bottomY} Z`;
                         
                         return (
                           <g key={`exp-${exp.id}`}>
@@ -624,7 +619,7 @@ export function FinetunePanel({
                               strokeLinejoin="round"
                               strokeLinecap="round"
                               strokeDasharray="6 4"
-                              opacity="0.8"
+                              opacity="0.85"
                             />
                           </g>
                         );

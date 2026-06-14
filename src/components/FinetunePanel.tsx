@@ -105,32 +105,78 @@ export function FinetunePanel({
   const lossData = useMemo(() => steps.map(s => s.loss), [steps]);
   const stepNumbers = useMemo(() => steps.map(s => s.step), [steps]);
 
+  const CHART = {
+    leftPad: 0,
+    rightPad: 0,
+    topPad: 6,
+    bottomPad: 0,
+  };
+
+  const SVG_W = 1000;
+  const SVG_H = 370;
+  const CHART_X = CHART.leftPad;
+  const CHART_Y = CHART.topPad;
+  const CHART_W = SVG_W - CHART.leftPad - CHART.rightPad;
+  const CHART_H = SVG_H - CHART.topPad - CHART.bottomPad;
+
   const { minLoss, maxLoss } = useMemo(() => {
     if (lossData.length === 0) return { minLoss: 0, maxLoss: 1 };
     let min = Math.min(...lossData);
     let max = Math.max(...lossData);
     if (min === max) {
-      min = min * 0.9;
-      max = max * 1.1;
+      min = min === 0 ? -1 : min * 0.9;
+      max = max === 0 ? 1 : max * 1.1;
     }
-    return { minLoss: min, maxLoss: max };
+    const padding = (max - min) * 0.08;
+    return { minLoss: min - padding, maxLoss: max + padding };
   }, [lossData]);
 
-  const pathPoints = useMemo(() => {
+  const xAt = useCallback((i: number) => {
+    if (lossData.length <= 1) return CHART_X;
+    return CHART_X + (i / (lossData.length - 1)) * CHART_W;
+  }, [lossData.length]);
+
+  const yAt = useCallback((loss: number) => {
+    if (maxLoss === minLoss) return CHART_Y + CHART_H / 2;
+    return CHART_Y + (1 - (loss - minLoss) / (maxLoss - minLoss)) * CHART_H;
+  }, [minLoss, maxLoss]);
+
+  const polylinePoints = useMemo(() => {
     if (lossData.length <= 1) return '';
-    return lossData.map((loss, i) => {
-      const x = (i / (lossData.length - 1)) * 100;
-      const y = 100 - ((loss - minLoss) / (maxLoss - minLoss)) * 100;
-      return `${x.toFixed(2)}% ${y.toFixed(2)}%`;
-    }).join(' ');
-  }, [lossData, minLoss, maxLoss]);
+    return lossData.map((loss, i) => `${xAt(i).toFixed(1)},${yAt(loss).toFixed(1)}`).join(' ');
+  }, [lossData, xAt, yAt]);
+
+  const areaPathD = useMemo(() => {
+    if (lossData.length <= 1) return '';
+    const bottomY = (CHART_Y + CHART_H).toFixed(1);
+    const firstX = xAt(0).toFixed(1);
+    const lastX = xAt(lossData.length - 1).toFixed(1);
+    const line = lossData.map((loss, i) => `L${xAt(i).toFixed(1)},${yAt(loss).toFixed(1)}`).join(' ');
+    return `M${firstX},${yAt(lossData[0]).toFixed(1)} ${line} L${lastX},${bottomY} L${firstX},${bottomY} Z`;
+  }, [lossData, xAt, yAt]);
 
   const currentPoint = useMemo(() => {
-    if (lossData.length <= 1) return { x: 0, y: 100 };
-    const x = (currentStepIndex / (lossData.length - 1)) * 100;
-    const y = 100 - ((lossData[currentStepIndex] - minLoss) / (maxLoss - minLoss)) * 100;
-    return { x, y };
-  }, [lossData, currentStepIndex, minLoss, maxLoss]);
+    if (lossData.length === 0) return { x: CHART_X, y: CHART_Y + CHART_H / 2 };
+    return { x: xAt(currentStepIndex), y: yAt(lossData[currentStepIndex]) };
+  }, [lossData, currentStepIndex, xAt, yAt]);
+
+  const yTickValues = useMemo(() => {
+    const arr: { value: number; yRatio: number }[] = [];
+    for (let i = 0; i <= 4; i++) {
+      const ratio = i / 4;
+      arr.push({ value: maxLoss - ratio * (maxLoss - minLoss), yRatio: ratio });
+    }
+    return arr;
+  }, [minLoss, maxLoss]);
+
+  const xTickValues = useMemo(() => {
+    if (stepNumbers.length === 0) return [] as { value: number; xRatio: number }[];
+    return [
+      { value: stepNumbers[0], xRatio: 0 },
+      { value: Math.round((stepNumbers[0] + stepNumbers[stepNumbers.length - 1]) / 2), xRatio: 0.5 },
+      { value: stepNumbers[stepNumbers.length - 1], xRatio: 1 },
+    ];
+  }, [stepNumbers]);
 
   return (
     <div className="bg-zinc-800/30 backdrop-blur-sm rounded-2xl border border-zinc-700/50 overflow-hidden">
@@ -249,63 +295,112 @@ export function FinetunePanel({
                   </div>
                 </div>
 
-                <div className="relative h-28 bg-zinc-800 rounded-lg overflow-hidden">
-                  <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    <defs>
-                      <linearGradient id="lossGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                        <stop offset="0%" stopColor="#10b981" stopOpacity="0.4" />
-                        <stop offset="100%" stopColor="#10b981" stopOpacity="0.05" />
-                      </linearGradient>
-                    </defs>
-                    
-                    {[0.25, 0.5, 0.75].map((p, i) => (
-                      <line
-                        key={i}
-                        x1="0"
-                        y1={p * 100}
-                        x2="100"
-                        y2={p * 100}
-                        stroke="#3f3f46"
-                        strokeWidth="0.2"
-                        strokeDasharray="1,1"
-                      />
+                <div className="relative h-44 bg-zinc-800 rounded-lg overflow-hidden">
+                  <div className="absolute left-0 top-0 bottom-0 w-14 flex flex-col justify-between py-3 px-1.5 pointer-events-none select-none z-10">
+                    {yTickValues.slice().reverse().map((tick, i) => (
+                      <div
+                        key={`yt-${i}`}
+                        className="text-right text-[11px] text-zinc-400 font-mono leading-none whitespace-nowrap"
+                        title={tick.value.toFixed(8)}
+                      >
+                        {tick.value.toExponential(1)}
+                      </div>
                     ))}
-                    
-                    {lossData.length > 1 && (
-                      <>
-                        <path
-                          d={`M 0 ${100 - ((lossData[0] - minLoss) / (maxLoss - minLoss)) * 100} L ${pathPoints} L 100 100 L 0 100 Z`}
-                          fill="url(#lossGradient)"
-                        />
-                        <polyline
-                          points={pathPoints}
-                          fill="none"
-                          stroke="#10b981"
-                          strokeWidth="0.8"
-                          vectorEffect="non-scaling-stroke"
-                        />
-                        <circle
-                          cx={currentPoint.x}
-                          cy={currentPoint.y}
-                          r="2.5"
-                          fill="#fbbf24"
-                          stroke="#fff"
-                          strokeWidth="0.5"
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      </>
-                    )}
-                  </svg>
-
-                  <div className="absolute left-2 top-0 bottom-0 flex flex-col justify-between py-1 pointer-events-none">
-                    <span className="text-[9px] text-zinc-500 font-mono">{maxLoss.toExponential(1)}</span>
-                    <span className="text-[9px] text-zinc-500 font-mono">{((minLoss + maxLoss) / 2).toExponential(1)}</span>
-                    <span className="text-[9px] text-zinc-500 font-mono">{minLoss.toExponential(1)}</span>
                   </div>
 
-                  <div className="absolute bottom-0 left-6 right-2 flex justify-between pointer-events-none">
-                    <span className="text-[9px] text-zinc-500 font-mono">Step {stepNumbers[0]}</span>
-                    <span className="text-[9px] text-zinc-500 font-mono">Step {stepNumbers[stepNumbers.length - 1]}</span>
+                  <div className="absolute left-14 right-4 top-3 bottom-8">
+                    <svg
+                      className="w-full h-full block"
+                      viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+                      preserveAspectRatio="none"
+                    >
+                      <defs>
+                        <linearGradient id="lossGradientArea" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#10b981" stopOpacity="0.5" />
+                          <stop offset="100%" stopColor="#10b981" stopOpacity="0.06" />
+                        </linearGradient>
+                      </defs>
+
+                      <rect
+                        x={0}
+                        y={CHART_Y}
+                        width={CHART_W}
+                        height={CHART_H}
+                        fill="none"
+                        stroke="#52525b"
+                        strokeWidth="2"
+                        rx="2"
+                      />
+
+                      {yTickValues.map((tick, i) => (
+                        i > 0 && i < yTickValues.length - 1 && (
+                          <line
+                            key={`gl-${i}`}
+                            x1={0}
+                            y1={CHART_Y + tick.yRatio * CHART_H}
+                            x2={CHART_W}
+                            y2={CHART_Y + tick.yRatio * CHART_H}
+                            stroke="#3f3f46"
+                            strokeWidth="1.2"
+                            strokeDasharray="5 7"
+                          />
+                        )
+                      ))}
+
+                      {lossData.length > 1 && (
+                        <>
+                          <path
+                            d={areaPathD}
+                            fill="url(#lossGradientArea)"
+                          />
+                          <polyline
+                            points={polylinePoints}
+                            fill="none"
+                            stroke="#10b981"
+                            strokeWidth="3.5"
+                            strokeLinejoin="round"
+                            strokeLinecap="round"
+                          />
+                        </>
+                      )}
+
+                      {lossData.length > 0 && (
+                        <>
+                          <circle
+                            cx={currentPoint.x}
+                            cy={currentPoint.y}
+                            r="11"
+                            fill="#fbbf24"
+                            opacity="0.15"
+                          />
+                          <circle
+                            cx={currentPoint.x}
+                            cy={currentPoint.y}
+                            r="7"
+                            fill="#fbbf24"
+                            stroke="#ffffff"
+                            strokeWidth="2.5"
+                          />
+                        </>
+                      )}
+                    </svg>
+                  </div>
+
+                  <div className="absolute left-14 right-4 bottom-0 h-8 flex items-end justify-between pointer-events-none select-none z-10">
+                    {xTickValues.map((tick, i) => (
+                      <div
+                        key={`xt-${i}`}
+                        className={`text-[11px] text-zinc-400 font-mono leading-none ${
+                          i === 0 ? 'text-left' : i === xTickValues.length - 1 ? 'text-right' : 'text-center'
+                        }`}
+                        style={{
+                          minWidth: i === 0 || i === xTickValues.length - 1 ? '0' : '60px',
+                          flex: i === 0 || i === xTickValues.length - 1 ? '0 0 auto' : '0 0 60px',
+                        }}
+                      >
+                        Step {tick.value}
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>

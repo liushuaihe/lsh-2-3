@@ -1,7 +1,31 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { Play, Pause, RotateCcw, Settings, Activity, TrendingDown } from 'lucide-react';
+import { Play, Pause, RotateCcw, Settings, Activity, TrendingDown, Save, Trash2, Eye, EyeOff, Layers } from 'lucide-react';
 import type { FinetuneStep } from '../types';
 import { formatMSE } from '../utils/colorMap';
+
+interface SavedExperiment {
+  id: string;
+  name: string;
+  color: string;
+  rank: number;
+  alpha: number;
+  learningRate: number;
+  numSteps: number;
+  steps: FinetuneStep[];
+  timestamp: number;
+  visible: boolean;
+}
+
+const COLOR_PALETTE = [
+  '#10b981',
+  '#f59e0b',
+  '#ef4444',
+  '#8b5cf6',
+  '#06b6d4',
+  '#ec4899',
+  '#84cc16',
+  '#f97316',
+];
 
 interface FinetunePanelProps {
   steps: FinetuneStep[];
@@ -29,9 +53,12 @@ export function FinetunePanel({
   const [learningRateInput, setLearningRateInput] = useState('0.01');
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(200);
+  const [savedExperiments, setSavedExperiments] = useState<SavedExperiment[]>([]);
+  const [historyPanelExpanded, setHistoryPanelExpanded] = useState(true);
   
   const animationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPlayingRef = useRef(false);
+  const experimentCounterRef = useRef(0);
 
   isPlayingRef.current = isPlaying;
 
@@ -145,6 +172,59 @@ export function FinetunePanel({
     onStepChange(index);
   }, [onStepChange]);
 
+  const handleSaveExperiment = useCallback(() => {
+    if (steps.length === 0) return;
+    
+    experimentCounterRef.current += 1;
+    const colorIndex = savedExperiments.length % COLOR_PALETTE.length;
+    const newExperiment: SavedExperiment = {
+      id: `exp-${Date.now()}-${experimentCounterRef.current}`,
+      name: `实验 #${experimentCounterRef.current}`,
+      color: COLOR_PALETTE[colorIndex],
+      rank,
+      alpha,
+      learningRate: learningRate,
+      numSteps: steps.length - 1,
+      steps: [...steps],
+      timestamp: Date.now(),
+      visible: true,
+    };
+    
+    setSavedExperiments((prev) => [...prev, newExperiment]);
+  }, [steps, rank, alpha, learningRate, savedExperiments.length]);
+
+  const handleToggleExperiment = useCallback((id: string) => {
+    setSavedExperiments((prev) =>
+      prev.map((exp) =>
+        exp.id === id ? { ...exp, visible: !exp.visible } : exp
+      )
+    );
+  }, []);
+
+  const handleDeleteExperiment = useCallback((id: string) => {
+    setSavedExperiments((prev) => prev.filter((exp) => exp.id !== id));
+  }, []);
+
+  const handleClearAllExperiments = useCallback(() => {
+    setSavedExperiments([]);
+  }, []);
+
+  const visibleSavedExperiments = useMemo(
+    () => savedExperiments.filter((exp) => exp.visible),
+    [savedExperiments]
+  );
+
+  const allLossData = useMemo(() => {
+    const all: number[] = [];
+    if (steps.length > 0) {
+      all.push(...steps.map((s) => s.loss));
+    }
+    visibleSavedExperiments.forEach((exp) => {
+      exp.steps.forEach((s) => all.push(s.loss));
+    });
+    return all;
+  }, [steps, visibleSavedExperiments]);
+
   const lossData = useMemo(() => steps.map(s => s.loss), [steps]);
   const stepNumbers = useMemo(() => steps.map(s => s.step), [steps]);
 
@@ -163,26 +243,31 @@ export function FinetunePanel({
   const CHART_H = SVG_H - CHART.topPad - CHART.bottomPad;
 
   const { minLoss, maxLoss } = useMemo(() => {
-    if (lossData.length === 0) return { minLoss: 0, maxLoss: 1 };
-    let min = Math.min(...lossData);
-    let max = Math.max(...lossData);
+    if (allLossData.length === 0) return { minLoss: 0, maxLoss: 1 };
+    let min = Math.min(...allLossData);
+    let max = Math.max(...allLossData);
     if (min === max) {
       min = min === 0 ? -1 : min * 0.9;
       max = max === 0 ? 1 : max * 1.1;
     }
     const padding = (max - min) * 0.08;
     return { minLoss: min - padding, maxLoss: max + padding };
-  }, [lossData]);
-
-  const xAt = useCallback((i: number) => {
-    if (lossData.length <= 1) return CHART_X;
-    return CHART_X + (i / (lossData.length - 1)) * CHART_W;
-  }, [lossData.length]);
+  }, [allLossData]);
 
   const yAt = useCallback((loss: number) => {
     if (maxLoss === minLoss) return CHART_Y + CHART_H / 2;
     return CHART_Y + (1 - (loss - minLoss) / (maxLoss - minLoss)) * CHART_H;
   }, [minLoss, maxLoss]);
+
+  const xAtForSteps = useCallback((i: number, totalSteps: number) => {
+    if (totalSteps <= 1) return CHART_X;
+    return CHART_X + (i / (totalSteps - 1)) * CHART_W;
+  }, []);
+
+  const xAt = useCallback((i: number) => {
+    if (lossData.length <= 1) return CHART_X;
+    return CHART_X + (i / (lossData.length - 1)) * CHART_W;
+  }, [lossData.length]);
 
   const polylinePoints = useMemo(() => {
     if (lossData.length <= 1) return '';
@@ -221,6 +306,24 @@ export function FinetunePanel({
     ];
   }, [stepNumbers]);
 
+  const maxStepCount = useMemo(() => {
+    let max = steps.length;
+    visibleSavedExperiments.forEach((exp) => {
+      if (exp.steps.length > max) max = exp.steps.length;
+    });
+    return max;
+  }, [steps.length, visibleSavedExperiments]);
+
+  const xTickValuesGlobal = useMemo(() => {
+    if (maxStepCount === 0) return [] as { value: number; xRatio: number }[];
+    const lastStep = maxStepCount - 1;
+    return [
+      { value: 0, xRatio: 0 },
+      { value: Math.round(lastStep / 2), xRatio: 0.5 },
+      { value: lastStep, xRatio: 1 },
+    ];
+  }, [maxStepCount]);
+
   return (
     <div className="bg-zinc-800/30 backdrop-blur-sm rounded-2xl border border-zinc-700/50 overflow-hidden">
       <div
@@ -236,6 +339,7 @@ export function FinetunePanel({
             <p className="text-sm text-zinc-400">
               观察矩阵在梯度下降过程中如何动态变化
               {steps.length > 0 && ` · 已完成 ${steps.length - 1} 步`}
+              {savedExperiments.length > 0 && ` · 已暂存 ${savedExperiments.length} 个实验`}
             </p>
           </div>
         </button>
@@ -340,15 +444,96 @@ export function FinetunePanel({
                     <TrendingDown className="w-4 h-4 text-emerald-400" />
                     <span className="text-sm text-zinc-400">损失曲线 (Loss Curve)</span>
                   </div>
-                  <div className="flex items-center gap-4 text-xs">
-                    <span className="text-zinc-500">
-                      初始: <span className="text-zinc-300 font-mono">{formatMSE(steps[0].loss)}</span>
-                    </span>
-                    <span className="text-zinc-500">
-                      最终: <span className="text-emerald-400 font-mono">{formatMSE(steps[steps.length - 1].loss)}</span>
-                    </span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleSaveExperiment}
+                      disabled={isFinetuning || steps.length === 0}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-xs rounded-lg transition-colors"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      暂存当前实验
+                    </button>
+                    <div className="flex items-center gap-4 text-xs">
+                      <span className="text-zinc-500">
+                        初始: <span className="text-zinc-300 font-mono">{formatMSE(steps[0].loss)}</span>
+                      </span>
+                      <span className="text-zinc-500">
+                        最终: <span className="text-emerald-400 font-mono">{formatMSE(steps[steps.length - 1].loss)}</span>
+                      </span>
+                    </div>
                   </div>
                 </div>
+
+                {savedExperiments.length > 0 && (
+                  <div className="mb-4 p-3 bg-zinc-800/50 rounded-lg border border-zinc-700/50">
+                    <button
+                      onClick={() => setHistoryPanelExpanded(!historyPanelExpanded)}
+                      className="w-full flex items-center justify-between text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-purple-400" />
+                        <span className="text-sm font-medium text-zinc-300">
+                          历史实验对比 ({savedExperiments.length})
+                        </span>
+                      </div>
+                      <span className="text-zinc-500 text-xs">
+                        {historyPanelExpanded ? '收起 ▲' : '展开 ▼'}
+                      </span>
+                    </button>
+                    
+                    {historyPanelExpanded && (
+                      <div className="mt-3 space-y-2">
+                        <div className="flex flex-wrap gap-2">
+                          {savedExperiments.map((exp) => (
+                            <div
+                              key={exp.id}
+                              className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border transition-all ${
+                                exp.visible
+                                  ? 'bg-zinc-700/50 border-zinc-600'
+                                  : 'bg-zinc-800/50 border-zinc-700/50 opacity-60'
+                              }`}
+                            >
+                              <div
+                                className="w-3 h-3 rounded-full flex-shrink-0"
+                                style={{ backgroundColor: exp.color }}
+                              />
+                              <span className="text-xs text-zinc-300 font-medium">
+                                {exp.name}
+                              </span>
+                              <span className="text-[10px] text-zinc-500 font-mono">
+                                r={exp.rank} α={exp.alpha} lr={exp.learningRate}
+                              </span>
+                              <button
+                                onClick={() => handleToggleExperiment(exp.id)}
+                                className="p-0.5 hover:bg-zinc-600 rounded transition-colors"
+                                title={exp.visible ? '隐藏' : '显示'}
+                              >
+                                {exp.visible ? (
+                                  <Eye className="w-3 h-3 text-zinc-400" />
+                                ) : (
+                                  <EyeOff className="w-3 h-3 text-zinc-500" />
+                                )}
+                              </button>
+                              <button
+                                onClick={() => handleDeleteExperiment(exp.id)}
+                                className="p-0.5 hover:bg-red-900/50 rounded transition-colors"
+                                title="删除"
+                              >
+                                <Trash2 className="w-3 h-3 text-zinc-500 hover:text-red-400" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        <button
+                          onClick={handleClearAllExperiments}
+                          className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                        >
+                          清除全部历史实验
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="relative h-44 bg-zinc-800 rounded-lg overflow-hidden">
                   <div className="absolute left-0 top-0 bottom-0 w-14 flex flex-col justify-between py-3 px-1.5 pointer-events-none select-none z-10">
@@ -374,6 +559,16 @@ export function FinetunePanel({
                           <stop offset="0%" stopColor="#10b981" stopOpacity="0.5" />
                           <stop offset="100%" stopColor="#10b981" stopOpacity="0.06" />
                         </linearGradient>
+                        {visibleSavedExperiments.map((exp) => (
+                          <linearGradient
+                            key={`grad-${exp.id}`}
+                            id={`lossGradient-${exp.id}`}
+                            x1="0" y1="0" x2="0" y2="1"
+                          >
+                            <stop offset="0%" stopColor={exp.color} stopOpacity="0.3" />
+                            <stop offset="100%" stopColor={exp.color} stopOpacity="0.02" />
+                          </linearGradient>
+                        ))}
                       </defs>
 
                       <rect
@@ -401,6 +596,39 @@ export function FinetunePanel({
                           />
                         )
                       ))}
+
+                      {visibleSavedExperiments.map((exp) => {
+                        const expLossData = exp.steps.map((s) => s.loss);
+                        if (expLossData.length <= 1) return null;
+                        
+                        const points = expLossData
+                          .map((loss, i) => `${xAtForSteps(i, expLossData.length).toFixed(1)},${yAt(loss).toFixed(1)}`)
+                          .join(' ');
+                        
+                        const bottomY = (CHART_Y + CHART_H).toFixed(1);
+                        const firstX = xAtForSteps(0, expLossData.length).toFixed(1);
+                        const lastX = xAtForSteps(expLossData.length - 1, expLossData.length).toFixed(1);
+                        const linePath = expLossData.map((loss, i) => 
+                          `L${xAtForSteps(i, expLossData.length).toFixed(1)},${yAt(loss).toFixed(1)}`
+                        ).join(' ');
+                        const areaD = `M${firstX},${yAt(expLossData[0]).toFixed(1)} ${linePath} L${lastX},${bottomY} L${firstX},${bottomY} Z`;
+                        
+                        return (
+                          <g key={`exp-${exp.id}`}>
+                            <path d={areaD} fill={`url(#lossGradient-${exp.id})`} />
+                            <polyline
+                              points={points}
+                              fill="none"
+                              stroke={exp.color}
+                              strokeWidth="2"
+                              strokeLinejoin="round"
+                              strokeLinecap="round"
+                              strokeDasharray="6 4"
+                              opacity="0.8"
+                            />
+                          </g>
+                        );
+                      })}
 
                       {lossData.length > 1 && (
                         <>
@@ -442,15 +670,15 @@ export function FinetunePanel({
                   </div>
 
                   <div className="absolute left-14 right-4 bottom-0 h-8 flex items-end justify-between pointer-events-none select-none z-10">
-                    {xTickValues.map((tick, i) => (
+                    {xTickValuesGlobal.map((tick, i) => (
                       <div
                         key={`xt-${i}`}
                         className={`text-[11px] text-zinc-400 font-mono leading-none ${
-                          i === 0 ? 'text-left' : i === xTickValues.length - 1 ? 'text-right' : 'text-center'
+                          i === 0 ? 'text-left' : i === xTickValuesGlobal.length - 1 ? 'text-right' : 'text-center'
                         }`}
                         style={{
-                          minWidth: i === 0 || i === xTickValues.length - 1 ? '0' : '60px',
-                          flex: i === 0 || i === xTickValues.length - 1 ? '0 0 auto' : '0 0 60px',
+                          minWidth: i === 0 || i === xTickValuesGlobal.length - 1 ? '0' : '60px',
+                          flex: i === 0 || i === xTickValuesGlobal.length - 1 ? '0 0 auto' : '0 0 60px',
                         }}
                       >
                         Step {tick.value}
@@ -458,6 +686,35 @@ export function FinetunePanel({
                     ))}
                   </div>
                 </div>
+
+                {savedExperiments.length > 0 && historyPanelExpanded && (
+                  <div className="mt-3 pt-3 border-t border-zinc-700/50">
+                    <div className="text-xs text-zinc-500 mb-2">图例说明</div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
+                      <div className="flex items-center gap-2">
+                        <div className="w-6 h-0.5 bg-emerald-500 rounded" />
+                        <span className="text-zinc-400">当前实验</span>
+                      </div>
+                      {savedExperiments.map((exp) => (
+                        <div key={exp.id} className="flex items-center gap-2">
+                          <div
+                            className="w-6 h-0.5 rounded"
+                            style={{ 
+                              backgroundColor: exp.color,
+                              opacity: exp.visible ? 1 : 0.3,
+                              borderStyle: 'dashed',
+                              borderWidth: '0 0 2px 0',
+                              borderColor: exp.color,
+                            }}
+                          />
+                          <span className={exp.visible ? 'text-zinc-400' : 'text-zinc-600'}>
+                            {exp.name}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="bg-zinc-900/50 rounded-xl p-4 border border-zinc-700/30">
@@ -520,6 +777,7 @@ export function FinetunePanel({
                   <p><strong>前向传播：</strong>W' = W₀ + α × (B × A)，其中 W₀ 固定，只训练 A 和 B</p>
                   <p><strong>反向传播：</strong>计算损失对 A 和 B 的梯度，使用梯度下降更新</p>
                   <p><strong>Alpha 的作用：</strong>α/r 作为缩放因子，控制低秩更新的幅度，防止小秩 r 时更新过小</p>
+                  <p><strong>历史对比：</strong>点击"暂存当前实验"按钮保存当前结果，可在同一张图中对比不同参数下的损失曲线</p>
                 </div>
               </div>
             </>
